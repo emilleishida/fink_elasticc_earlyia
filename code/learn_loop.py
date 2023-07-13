@@ -28,6 +28,7 @@ from actsnclass import DataBase
 import pickle
 
 bands = ['u', 'g', 'r', 'i', 'z', 'Y']
+rare = True
 
 taxonomy = {111: 'Ia',
            112: 'Ibc',
@@ -54,11 +55,15 @@ taxonomy = {111: 'Ia',
            220: 'NonPeriodicOther',
            221: 'AGN'}
 
-input_dir = '/media/ELAsTICC/Fink/first_year/early_SNIa/all_features/'
+# create inverse taxonomy
+taxonomy_inv = {v: k for k, v in taxonomy.items()}
 
+# read data files names
+input_dir = '/media/ELAsTICC/Fink/first_year/early_SNIa/all_features/'
 flist = os.listdir(input_dir)
 flist.remove('.ipynb_checkpoints')
 
+# read data
 data_list = []
 for fname in flist:
     data_temp = pd.read_csv(input_dir + fname, index_col=False)
@@ -74,6 +79,9 @@ for fname in flist:
     data_list.append(data_temp)
     
 data_pd = pd.concat(data_list, ignore_index=True)
+
+# remove dust
+data_pd.drop(columns=['mwebv_err', 'mwebv_err.1'], inplace=True)
 
 #### train
 train_dir = '/media/ELAsTICC/Fink/first_year/early_SNIa/AL/UncSampling/training_samples/'
@@ -111,30 +119,62 @@ data_test_all = data_unique[~train_flag]
 
 features_names = list(data_train_all.keys())[3:]
 
+## Separate only rare classes
+if rare:
+    #keep_classes = ['Iax', '91bg', 'KN', 'DwarfNovae', 'mLens', 'TDE', 'ILOT', 'CART', 'PISN', 
+    #                 'Cepheid']
+    keep_classes = ['AGN']
+    
+    numbers = [taxonomy_inv[item] for item in keep_classes]
+
+    temp_list_train = []
+    temp_list_test = []
+    
+    flag_temp = np.isin(data_train_all['classId'].values, numbers)
+    temp_list_train.append(data_train_all[flag_temp])
+    
+    flag_temp2 = np.isin(data_test_all['classId'].values, numbers)
+    temp_list_test.append(data_test_all[flag_temp2])
+    
+    temp_train_pd = pd.concat(temp_list_train, ignore_index=True)  
+    temp_test_pd = pd.concat(temp_list_test, ignore_index=True)
+
+    snia_train = data_train_all[data_train_all['classId'].values == 111].sample(n=temp_train_pd.shape[0], 
+                                                                      replace=False)
+    
+    snia_test = data_test_all[data_test_all['classId'].values == 111].sample(n=temp_test_pd.shape[0], 
+                                                                      replace=False)
+    data_train_rare = pd.concat([temp_train_pd, snia_train], ignore_index=True)
+    data_test_rare = pd.concat([temp_test_pd, snia_test], ignore_index=True)
+    
+    data_train2 = data_train_rare.sample(n=data_train_rare.shape[0], replace=False)
+    data_test2 = data_test_rare.sample(n=data_test_rare.shape[0], replace=False)
+    
+
 # initiate object
 data = DataBase()
 data.features_names = features_names
 data.metadata_names = ['diaObjectId', 'id', 'classId', 'type']
 
 # separate ias and nonias
-ia_flag = data_train_all['classId'].values == 111
-train_ia = data_train_all[ia_flag]
-train_nonia = data_train_all[~ia_flag]
+ia_flag = data_train2['classId'].values == 111
+train_ia = data_train2[ia_flag]
+train_nonia = data_train2[~ia_flag]
 
 # build training
-n_train = 20
+n_train = 50
 train_pd = pd.concat([train_ia.sample(n=int(n_train/2), replace=False), train_nonia.sample(n=int(n_train/2), replace=False)])
 
 train_pd['type'] = [taxonomy[item] for item in train_pd['classId'].values]
-data.train_metadata = deepcopy(train_pd[list(data_train_all.keys())[:3] + ['type']])
-data.train_features = deepcopy(train_pd[list(data_train_all.keys())[3:]].values)
+data.train_metadata = deepcopy(train_pd[list(data_train2.keys())[:3] + ['type']])
+data.train_features = deepcopy(train_pd[list(data_train2.keys())[3:]].values)
 train_labels = data.train_metadata['classId'].values == 111
 data.train_labels = train_labels.astype(int)
 data.train_metadata.rename(columns={'alertId':'id'}, inplace=True)
 
-current_test = data_test_all.sample(n=100000, replace=False)
+current_test = data_test2.sample(n=100000, replace=False)
 current_test['type'] = [taxonomy[item] for item in current_test['classId'].values]
-data.test_metadata = deepcopy(current_test[list(data_test_all.keys())[:3] + ['type']])
+data.test_metadata = deepcopy(current_test[list(data_test2.keys())[:3] + ['type']])
 test_labels = data.test_metadata['classId'].values == 111
 data.test_features= current_test[data.features_names].values
 data.test_labels = test_labels.astype(int)
@@ -142,18 +182,31 @@ data.test_metadata.rename(columns={'alertId':'id'}, inplace=True)
 
 data.queryable_ids = data.test_metadata['id'].values
 
+# rare1 ==> batch = 1
+# rare0 ==> batch = 10
+# rare2 ==> batch = 20
+# rare3 ==> batch = 20, ntrain=50
+# Ibc1  ==> batch=20, ntrain = 50, rare type = Ibc
+# II1   ==> batch=20, ntrain = 50, rare type = II
+# SLSN1 ==> batch=20, ntrain=50, rare type = SLSN
+# RRLyrae1 ==> batch=20, ntrain=50, rare type = RRLyrae
+# dScuti1 ==> batch=20, ntrain=50, rare type = dScuti
+# EB1 ==> batch=20, ntrain=50, rare type=EB
+# AGN1 ==> batch=20, ntrain=50, rare type=AGN
+
 screen = True
+post_name = '_AGN1'
 classifier = 'RandomForest'
 nest = 30
 seed = 42
 max_depth = 30
 n_jobs = 20
 strategy = 'UncSampling'
-batch = 1
+batch = 20
 output_metrics_file = '/media/ELAsTICC/Fink/first_year/early_SNIa/AL/UncSampling/metrics/metric_' + \
-                      strategy + '.csv'
+                      strategy + post_name + '.csv'
 output_queried_file = '/media/ELAsTICC/Fink/first_year/early_SNIa/AL/UncSampling/queries/queried_' + \
-                      strategy + '.csv'
+                      strategy + post_name + '.csv'
 
 for loop in range(1000):
     # classify
@@ -179,11 +232,11 @@ for loop in range(1000):
     
 final_train = pd.concat([data.train_metadata, pd.DataFrame(data.train_features, columns=features_names)], axis=1)
 final_train.to_csv('/media/ELAsTICC/Fink/first_year/early_SNIa/AL/UncSampling/training_samples/train_1020_v' + 
-                   str(len(fname_train_list) + 1) + '.csv')
+                   str(len(fname_train_list) + 1) + post_name + '.csv')
 
 final_test = pd.concat([data.test_metadata, pd.DataFrame(data.test_features, columns=features_names)], axis=1)
 final_test.to_csv('/media/ELAsTICC/Fink/first_year/early_SNIa/AL/UncSampling/test_samples/test_' + \
-                  str(data.test_metadata.shape[0]) +'_v' + str(len(fname_train_list) + 1) + '.csv', index=False)
+                  str(data.test_metadata.shape[0]) +'_v' + str(len(fname_train_list) + 1) + post_name + '.csv', index=False)
 
 nest = 30
 seed = 42
@@ -199,5 +252,5 @@ pred = clf.predict(data.test_features)
 print('acc: ', clf.score(data.test_features, data.test_labels))
 print('pur:', sum(data.test_labels[pred == 1])/sum(pred))
 
-filename = 'model_AL_1020_v' +  str(len(fname_train_list) + 1) + '.pkl'
+filename = 'model_AL_1020_v' +  str(len(fname_train_list) + 1) + post_name + '.pkl'
 pickle.dump(clf, open(filename, 'wb'))
